@@ -8,6 +8,8 @@ git clone https://github.com/speakrail/speakrail && cd speakrail && docker compo
 
 Then open **http://localhost:8080** and allow the microphone. Don't worry if it takes long to launch, the entire package is ~75 GB and it takes a long time to compile audio.cpp, prerender TTS cache and start vLLM.
 
+https://github.com/user-attachments/assets/4d73f149-2d94-4bf6-b0a8-76be4b8a1840
+
 Speakrail listens while it talks. You can interrupt it, say "mm-hmm" without stopping it, pause mid-sentence without being cut off, and ask it to count your reps while you keep talking. 
 
 ## How it works
