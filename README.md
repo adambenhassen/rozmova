@@ -1,16 +1,16 @@
-# Speakrail
+# Rozmova
 
-A full-duplex voice assistant that runs on a single RTX 4090.
+A full-duplex voice assistant that runs on a single RTX 4090. Rozmova (Ukrainian «розмова», "conversation") is a fork of [Speakrail](https://github.com/speakrail/speakrail) that adds Ukrainian, with switching between Ukrainian and English in one conversation. Ukrainian support is in progress. Today it behaves like upstream Speakrail: English only, and Ukrainian speech is transcribed and answered in Russian, which this fork exists to fix. The demo, benchmark scores and latency figures below are upstream Speakrail's.
 
 ```bash
-git clone https://github.com/speakrail/speakrail && cd speakrail && docker compose up -d
+git clone https://github.com/adambenhassen/rozmova && cd rozmova && docker compose up -d
 ```
 
 Then open **http://localhost:8080** and allow the microphone. Don't worry if it takes long to launch, the entire package is ~75 GB and it takes a long time to compile audio.cpp, prerender TTS cache and start vLLM.
 
 https://github.com/user-attachments/assets/4d73f149-2d94-4bf6-b0a8-76be4b8a1840
 
-Speakrail listens while it talks. You can interrupt it, say "mm-hmm" without stopping it, pause mid-sentence without being cut off, and ask it to count your reps while you keep talking. 
+It listens while it talks. You can interrupt it, say "mm-hmm" without stopping it, pause mid-sentence without being cut off, and ask it to count your reps while you keep talking. 
 
 ## How it works
 
@@ -70,7 +70,7 @@ docker compose up -d --build
 
 The speech recognizer is compiled for the RTX 3090 and 4090 generations by default; for an RTX 5090, set `ASR_CUDA_ARCHS=86;89;120` in `.env` before building.
 
-Browsers allow the microphone only on `localhost` or over HTTPS. If Speakrail runs on another machine, use an SSH tunnel:
+Browsers allow the microphone only on `localhost` or over HTTPS. If Rozmova runs on another machine, use an SSH tunnel:
 
 ```bash
 ssh -L 8080:localhost:8080 your-gpu-box
@@ -97,7 +97,7 @@ Everything is in `.env` (see [.env.example](.env.example)):
 
 ## Limitations
 
-- English only.
+- English only for now. Ukrainian support is in progress: [eval/](eval/) measures speech recognition, turn-taking and replies on Ukrainian and mixed Ukrainian/English speech. A reply in Russian counts as a failure.
 - One conversation at a time.
 - Echo cancellation comes from the client: browsers do it; a bare microphone and speaker on a device without it will hear the assistant as you.
 - Following written-format instructions (word counts, markdown) is weaker than base Gemma: the model is tuned for short spoken answers.
@@ -105,15 +105,15 @@ Everything is in `.env` (see [.env.example](.env.example)):
 
 ## License
 
-Speakrail's code is licensed under the [Apache License 2.0](LICENSE).
+Rozmova's code, like Speakrail's, is licensed under the [Apache License 2.0](LICENSE).
 
 The models it downloads keep their own licenses (details in [NOTICE](NOTICE)):
 
 - **Gemma 4 12B** (Google DeepMind): Apache 2.0
 - **Voxtral Mini 4B Realtime** (Mistral AI): Apache 2.0
-- **Breeze TTS 2** (BreezeBlue): code Apache 2.0; model weights and the audio they generate are for research and non-commercial use only. If you want to use speakrail commercially, you will have to swap that for another TTS. Any streaming TTS should work (in theory).
+- **Breeze TTS 2** (BreezeBlue): code Apache 2.0; model weights and the audio they generate are for research and non-commercial use only. If you want to use Rozmova commercially, you will have to swap that for another TTS. Any streaming TTS should work (in theory).
 
-Speech recognition runs on [our fork of audio.cpp](https://github.com/speakrail/audio.cpp) (Apache 2.0, by [ShugoAI LLC](https://github.com/0xShug0/audio.cpp)), which adds the turn-taking head and peek decoding to its Voxtral realtime model. The voice runs on [our fork of Breeze TTS](https://github.com/speakrail/breeze-tts), which adds int8 serving next to an LLM on one card.
+Speech recognition runs on [Speakrail's fork of audio.cpp](https://github.com/speakrail/audio.cpp) (Apache 2.0, by [ShugoAI LLC](https://github.com/0xShug0/audio.cpp)), which adds the turn-taking head and peek decoding to its Voxtral realtime model. The voice runs on [Speakrail's fork of Breeze TTS](https://github.com/speakrail/breeze-tts), which adds int8 serving next to an LLM on one card.
 
 ## Troubleshooting
 
