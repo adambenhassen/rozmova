@@ -53,3 +53,6 @@ dist/
 .idea/
 *.swp
 .DS_Store
+
+# Eval test data (FLEURS, smart-turn-data downloads)
+eval/data/
