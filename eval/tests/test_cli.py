@@ -38,7 +38,7 @@ def test_aggregate_e2e_no_reply_no_audio_russian():
     assert a["failed"] == 0 and a["no_reply"] == 1 and a["no_audio"] == 1
     assert a["reply_langs"] == {"uk": 1, "ru": 1} and a["reply_lang_match"] == 0.5
     assert a["word_end_to_endpoint"]["p50"] == 300
-    assert [x["text"] for x in a["russian"]] == []          # no texts recorded in these fixture rows
+    assert [x["text"] for x in a["russian"]] == ["Я не совсем понял."]      # reply audited even without texts
 
 
 def test_gate_a():
@@ -51,6 +51,9 @@ def test_gate_a():
     assert gate_a(None, doc(0.07), 2)[0] == "undecided"
     assert gate_a(doc(0.08, ids=("a",)), doc(0.07), 2)[0] == "undecided"          # partial coverage
     assert gate_a(doc(0.08), doc(0.07, ids=("a", "c")), 2)[0] == "undecided"      # different clips
+    unsure = doc(0.08)
+    unsure["aggregate"]["russian_uncertain"] = [{"id": "a"}]
+    assert gate_a(unsure, doc(0.07), 2)[0] == "undecided"                      # open review items
     bad = doc(0.07)
     bad["aggregate"] = {"invalid": True, "n": 2, "failed": 1}
     assert gate_a(doc(0.08), bad, 2)[0] == "undecided"
@@ -74,3 +77,17 @@ def test_russian_audit_e2e_all_texts():
              {"kind": "interject", "text": "Да, конечно."}, {"kind": "user_word", "text": "Привіт"}]
     a = aggregate("uk_read", rows(1, 0, reply="Добре, зараз.", texts=texts, chain={}, decisions=[]), e2e=True)
     assert sorted(x["kind"] for x in a["russian"]) == ["interject", "user_word"]
+
+
+def test_russian_audit_failed_and_legacy_rows():
+    failed = [{"id": "f", "status": "failed", "texts": [{"kind": "user_word", "text": "масштабные"}]}]
+    legacy = [{"id": "l", "status": "ok", "reply": "Хорошо, конечно, сейчас.", "chain": {}, "decisions": []}]
+    a = aggregate("uk_read", failed + legacy, e2e=True)
+    assert sorted(x["id"] for x in a["russian"]) == ["f", "l"]
+    assert a["audit_incomplete"] == 1
+
+
+def test_asr_failure_partial_transcript_audited():
+    rs = [{"id": "x", "status": "failed", "hyp_partial": "Комиссия стала масштабные"}] + rows(60, 0, ref="a", hyp="a")
+    a = aggregate("uk_read", rs, e2e=False)
+    assert [r["id"] for r in a["russian"]] == ["x"]

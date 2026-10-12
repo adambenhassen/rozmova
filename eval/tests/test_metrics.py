@@ -105,3 +105,36 @@ def test_normalize_signed_and_grouped_numbers():
     assert normalize("temperature -5") == "temperature minus five"
     assert normalize("it costs 1,234.56") == "it costs one thousand two hundred and thirty four point five six"
     assert normalize("pre-2010 rules") == "pre two thousand and ten rules"
+
+
+def test_contains_russian_short_names_vs_short_russian():
+    import metrics
+    # names and 1-2 word fragments must not trip language ID; short Russian is caught by marker words
+    assert not metrics.contains_russian("Фотографи пізніше зайняли місце. Мендозу застрелили.")
+    assert not metrics.contains_russian("Це одна з атракцій. Сан Паркс.")
+    assert metrics.contains_russian("Позвони мне завтра.")
+    assert metrics.contains_russian("від Буэнос-Айреса.")                          # Russian spelling of a name
+
+
+def test_short_russian_replies_and_markers_not_outvoted():
+    import metrics
+    for t in ("Понятно.", "Спасибо!", "Привет.", "Посмотрю.", "Я слушаю.", "Согласен.", "Извините, поняла."):
+        assert metrics.contains_russian(t), t
+    assert metrics.contains_russian("Привіт, як справи? Понятно.")       # a Ukrainian line does not outvote it
+    for t in ("Зрозуміло.", "Дякую!", "Привіт.", "Подивлюсь.", "Слухаю.", "Згоден.", "Ага.", "Угу."):
+        assert not metrics.contains_russian(t), t
+
+
+def test_markers_shared_with_ukrainian_do_not_flag():
+    import metrics
+    # "ладно" is left to language ID (borderline colloquial Ukrainian); these two are plain Ukrainian
+    for t in ("Ви говорите українською.", "Це правильно."):
+        assert not metrics.contains_russian(t), t
+
+
+def test_single_word_never_uncertain(monkeypatch):
+    import metrics
+    monkeypatch.setattr(metrics, "lang_id", lambda t: "ru")
+    monkeypatch.setattr(metrics, "lid_says_russian", lambda t: False)
+    assert metrics.russian_verdict("Мартелли") == "clean"
+    assert metrics.russian_verdict("Мендозу застрелили.") == "uncertain"

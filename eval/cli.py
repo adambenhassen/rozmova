@@ -47,17 +47,28 @@ def russian_audit(rows: list[dict], e2e: bool) -> list[dict]:
     """Every Russian text the user would see or hear, from every row that has output, valid run or not."""
     out = []
     for r in rows:
-        texts = r.get("texts", []) if e2e else ([{"kind": "transcript", "text": r["hyp"]}] if r.get("hyp") else [])
-        out += [{"id": r["id"], "kind": t["kind"], "text": t["text"][:160]} for t in texts if M.contains_russian(t["text"])]
+        if e2e:      # rows from before full capture keep only the reply: audit it rather than report a false zero
+            texts = r["texts"] if "texts" in r else ([{"kind": "reply (only field kept)", "text": r["reply"]}]
+                                                     if r.get("reply") else [])
+        else:
+            hyp = r.get("hyp") or r.get("hyp_partial")
+            texts = [{"kind": "transcript", "text": hyp}] if hyp else []
+        for t in texts:
+            v = M.russian_verdict(t["text"])
+            if v != "clean":
+                out.append({"id": r["id"], "kind": t["kind"], "text": t["text"][:160], "verdict": v})
     return out
 
 
 def aggregate(name: str, rows: list[dict], e2e: bool) -> dict:
     ok = [r for r in rows if r["status"] == "ok"]
+    audit = russian_audit(rows, e2e)       # zero-Russian requirement: all output, every language, before validity cuts
     agg = {"n": len(rows), "failed": len(rows) - len(ok),
-           # zero-Russian requirement: audited on all output, every language, before any validity cut
-           "russian": russian_audit(rows, e2e), "russian_detector": "letters+words+lid" if M.lid_available() else
+           "russian": [x for x in audit if x["verdict"] == "ru"],
+           "russian_uncertain": [x for x in audit if x["verdict"] == "uncertain"], "russian_detector": "letters+words+lid" if M.lid_available() else
            "letters+words only (language ID missing: Russian may be undercounted)"}
+    if e2e:
+        agg["audit_incomplete"] = sum("texts" not in r for r in rows)   # rows audited on the reply text alone
     if name in TURN_SETS:
         unscored = [r for r in ok if r.get("score") is None]
         agg["failed"] += len(unscored)                     # no head frames after the clip end counts as a failure
@@ -109,6 +120,10 @@ async def run_row(name: str, row: dict, args) -> dict:
                 rec["score"] = M.turn_score(r["turn"], r["classes"], end_ms=len(x) / audio.SR * 1000)
     except asyncio.TimeoutError:
         rec |= {"status": "failed", "reason": "timeout"}
+    except app_client.AppError as e:                        # failed, but what was shown is still audited
+        rec |= {"status": "failed", "reason": str(e)[:300], "texts": e.texts}
+    except asr_client.ASRError as e:
+        rec |= {"status": "failed", "reason": str(e)[:300], "hyp_partial": e.text}
     except asr_client.Busy:
         raise
     except Exception as e:                                  # one bad clip must not end the run
@@ -201,6 +216,9 @@ def gate_a(vox: dict | None, para: dict | None, n_set: int) -> tuple[str, str]:
     if ru:
         return ("FAIL: Voxtral writes Russian; fine-tune or replace it (Phase 2)",
                 f"{ru} of {v['n']} Ukrainian clips transcribed with Russian (must be 0); WER {v['wer']:.1%}")
+    unc = len({x["id"] for x in v.get("russian_uncertain", [])})
+    if unc:                                  # zero Russian is certified only once every review item is cleared
+        return "undecided", f"{unc} clips have possible Russian awaiting review"
     ratio = v["wer"] / p["wer"] if p["wer"] else float("inf")
     why = f"no Russian; Voxtral WER {v['wer']:.1%} = {ratio:.2f}x streaming Parakeet's {p['wer']:.1%} (limit {GATE_WER_RATIO}x)"
     return ("PASS: keep Voxtral, Phase 2a" if ratio <= GATE_WER_RATIO else "FAIL: swap ASR, Phase 2b"), why
@@ -218,9 +236,15 @@ def russian_lines(label: str, a: dict) -> list[str]:
     ru = a.get("russian")
     if ru is None:
         return []
-    out = [f"- **{label}: {len({x['id'] for x in ru})} clips with Russian output** ({a['russian_detector']})"]
+    unc = a.get("russian_uncertain") or []
+    out = [f"- **{label}: {len({x['id'] for x in ru})} clips with Russian output**, {len({x['id'] for x in unc})} to "
+           f"review ({a['russian_detector']})"]
+    if a.get("audit_incomplete"):
+        out.append(f"  - **incomplete audit:** {a['audit_incomplete']} rows kept only the reply text, so zero here "
+                   "does not certify the transcript, interjections or cards")
     out += [f"  - `{x['id']}` {x['kind']}: {x['text']}" for x in ru[:10]]
-    return out + ([f"  - ... {len(ru) - 10} more in the result file"] if len(ru) > 10 else [])
+    out += [f"  - ... {len(ru) - 10} more in the result file"] if len(ru) > 10 else []
+    return out + [f"  - review `{x['id']}` {x['kind']}: {x['text']}" for x in unc[:5]]
 
 
 def cmd_summary(_args):
@@ -241,6 +265,15 @@ def cmd_summary(_args):
                 "invalid |  |  |  |" if a.get("invalid") else
                 f"{fmt(a.get('wer'))} | {fmt(a.get('cer'))} | {fmt(a.get('russian_rate'))} | {fmt(a.get('restarts'))} |")
                 + f" {d['file']} |")
+            ru_lines += russian_lines(f"{name} ({label})", a)
+        for f in sorted(glob.glob(os.path.join(OUT, f"*-{name}-nemotron-*.json"))):
+            d = json.load(open(f))
+            a = aggregate(d["set"], d["rows"], False)
+            label = f"Nemotron 3.5 streaming, {d['lang']}, {d['chunk_ms']} ms chunks"
+            lines.append(f"| {name} ({label}) | {a['n']} | {a['failed']} | " + (
+                "invalid |  |  |  |" if a.get("invalid") else
+                f"{fmt(a.get('wer'))} | {fmt(a.get('cer'))} | {fmt(a.get('russian_rate'))} | {fmt(a.get('restarts'))} |")
+                + f" {os.path.basename(f)} |")
             ru_lines += russian_lines(f"{name} ({label})", a)
     lines += ["", "Spliced uk/en results are an optimistic upper bound (switches fall between speakers).", ""]
     lines += ["## Turn head (complete vs incomplete, clip end + 400 ms)", "",
@@ -293,9 +326,12 @@ def latest_tts() -> list[dict]:
         by_adapter[json.load(open(f))["aggregate"]["adapter"]] = f
     out = []
     for adapter, f in sorted(by_adapter.items()):
-        a = tts_bench.aggregate(adapter, json.load(open(f))["rows"])
+        rows = json.load(open(f))["rows"]
+        a = tts_bench.aggregate(adapter, rows)
         para = latest(f"tts_{adapter}", "-parakeet")
-        if para and not para["aggregate"].get("invalid"):
+        # only a Parakeet run over exactly these clips, made after this synthesis, scores it
+        if (para and not para["aggregate"].get("invalid") and os.path.getmtime(os.path.join(OUT, para["file"])) > os.path.getmtime(f)
+                and {r["id"] for r in para["rows"]} == {r["id"] for r in rows if r.get("audio")}):
             a["roundtrip_cer_parakeet"] = para["aggregate"].get("cer")
         out.append(a)
     return out

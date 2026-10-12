@@ -14,8 +14,13 @@ APOSTROPHES = "'’‘`ʹ"                      # all folded to U+02BC (Ukrainia
 RU_ONLY = set("ыэъё")                       # letters Russian has and Ukrainian doesn't
 UK_ONLY = set("іїєґ")                       # and the reverse
 # frequent words found in only one of the two (short replies often have none of the letters above)
-RU_WORDS = {"что", "это", "как", "мы", "вы", "да", "нет", "или", "если", "меня", "тебя", "совсем", "понял", "сейчас",
-            "здесь", "только", "конечно", "хорошо", "его", "она", "они", "можно", "пожалуйста"}
+RU_WORDS = {"что", "это", "как", "мы", "вы", "да", "нет", "или", "если", "меня", "мне", "тебя", "совсем", "понял", "сейчас",
+            "здесь", "только", "конечно", "хорошо", "его", "она", "они", "можно", "пожалуйста",
+            # short conversational replies and backchannels (Ukrainian in brackets), caught without language ID:
+            "понятно", "спасибо", "привет", "посмотрю", "слушаю", "согласен", "согласна", "поняла", "извините",  # зрозуміло дякую привіт подивлюсь слухаю згоден згодна зрозуміла вибачте
+            "ничего", "почему", "где", "когда", "кто", "сколько", "сегодня", "скажите",                          # нічого чому де коли хто скільки сьогодні скажіть
+            "минутку", "подождите", "отлично", "здравствуйте"}                                                 # хвилинку зачекайте чудово вітаю
+# never add a word Ukrainian also uses ("говорите", "правильно", "ладно"): a marker flags the whole line
 UK_WORDS = {"що", "це", "як", "ми", "ви", "так", "ні", "або", "якщо", "мене", "тебе", "зовсім", "зрозумів", "зараз",
             "тут", "тільки", "звичайно", "добре", "його", "вона", "вони", "можна", "будь", "ласка"}
 PERCENT = {"en": "percent", "uk": "відсотків"}
@@ -130,29 +135,63 @@ LID_PATH = os.environ.get("LID_MODEL", "/opt/lid.176.ftz")   # fastText language
 _lid = None
 
 
-def lang_id(text: str) -> str | None:
-    """fastText's top language for the line ("uk", "ru", ...), or None when the model isn't installed."""
+LID_MIN_WORDS = 3           # 1-2 word clauses are mostly names ("Сан Паркс", "Джонсона"): fastText calls them Russian
+LID_MIN_P, LID_MARGIN = 0.6, 2.0
+
+
+def lang_probs(text: str) -> dict[str, float]:
+    """fastText's top languages for the line, {"ru": 0.8, "uk": 0.1, ...}; {} when the model isn't installed."""
     global _lid
     if _lid is None:
         if not os.path.exists(LID_PATH):
-            return None
+            return {}
         import fasttext
         _lid = fasttext.load_model(LID_PATH)
-    labels, _ = _lid.predict(" ".join(text.split()), k=1)
-    return labels[0].removeprefix("__label__") if labels else None
+    labels, probs = _lid.predict(" ".join(text.split()), k=3)
+    return {l.removeprefix("__label__"): float(p) for l, p in zip(labels, probs)}
+
+
+def lang_id(text: str) -> str | None:
+    p = lang_probs(text)
+    return max(p, key=p.get) if p else None
+
+
+def lid_says_russian(span: str) -> bool:
+    if len(re.findall(r"[^\W\d_]+", span)) < LID_MIN_WORDS:
+        return False
+    p = lang_probs(span)
+    return p.get("ru", 0) >= LID_MIN_P and p.get("ru", 0) >= LID_MARGIN * p.get("uk", 0)
 
 
 _SPANS = re.compile(r"[^.!?;:…\n]+")
 
 
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[^\W\d_]+", text.lower()))
+
+
+def russian_verdict(text: str) -> str:
+    """"ru" (Russian found), "uncertain" (language ID leans Russian on a clause too short or below threshold to
+    certify either way: listed for review) or "clean". Russian markers are never outvoted by Ukrainian words."""
+    if RU_ONLY & set(text.lower()) or RU_WORDS & _words(text):
+        return "ru"
+    spans = [sp for sp in (x.strip() for x in _SPANS.findall(text)) if any(c.isalpha() for c in sp)] or [text]
+    verdict = "clean"
+    for sp in spans:
+        if majority_script(sp) != "cyrl":
+            continue
+        if lid_says_russian(sp):
+            return "ru"
+        if len(re.findall(r"[^\W\d_]+", sp)) >= 2 and lang_id(sp) == "ru":
+            verdict = "uncertain"            # one word ("Мартелли", "стала") tells language ID nothing
+    return verdict
+
+
 def contains_russian(text: str) -> bool:
     """Zero-Russian check, per sentence so a Russian clause inside a Ukrainian or English line is not outvoted: any
-    Russian-only letter, or a span that reads as Russian by marker words or by language ID."""
-    if RU_ONLY & set(text.lower()):
-        return True
-    spans = [sp for sp in (x.strip() for x in _SPANS.findall(text)) if any(c.isalpha() for c in sp)]
-    return any(reply_language(sp) == "ru" or (majority_script(sp) == "cyrl" and lang_id(sp) == "ru")
-               for sp in spans or [text])
+    Russian-only letter (also in names: "Буэнос-Айрес" is the Russian spelling), Russian marker words, or confident
+    language ID on clauses of LID_MIN_WORDS+ words."""
+    return russian_verdict(text) == "ru"
 
 
 def lid_available() -> bool:

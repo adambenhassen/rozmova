@@ -7,11 +7,11 @@ Down: JSON events and binary reply audio (2-byte little-endian utt id, 2 pad byt
   turn {turn, ...chain}       latency chain; re-sent as the turn updates (kept: the last snapshot per turn)
   word {text}                 the user's own words as shown on screen
   interject / backchannel     the agent's other spoken text
-  tool / search               tool cards shown on screen
+  tool / search / search_done tool cards, the Memory card and web-search snippets shown on screen
   error                       a backend failure: the clip is a failed run, not a "no reply" result
 The app logs a turn's chain when the client reports playback, so the client sends {"cmd":"play_start"} on each reply's
 first audio frame. The whole clip is always sent; afterwards the client keeps sending silence, as an open mic would,
-until the first reply ends or `timeout_s` passes."""
+until the first reply ends (plus DRAIN_S for late output and the final chain snapshot) or `timeout_s` passes."""
 from __future__ import annotations
 
 import asyncio
@@ -26,10 +26,17 @@ from asr_client import CHUNK, stream_pcm
 from audio import SR, pcm16
 
 APP_URL = os.environ.get("APP_URL", "ws://app:8080/ws")
+DRAIN_S = 1.5
+SEARCH_SHOWN = 4                 # the search card renders the first 4 results (app/web/live/live.js cardDone)
 
 
 class AppError(RuntimeError):
-    """The app reported an error or dropped the connection: the clip failed, it is not a model result."""
+    """The app reported an error or dropped the connection: the clip failed, it is not a model result. `texts` keeps
+    what the user had already seen or heard, so the zero-Russian audit still covers it."""
+
+    def __init__(self, msg: str, texts: list[dict] | None = None):
+        super().__init__(msg)
+        self.texts = texts or []
 
 
 async def _open(s: aiohttp.ClientSession, url: str, tries: int = 6):
@@ -59,7 +66,7 @@ async def converse(x: np.ndarray, timeout_s: float = 20.0, url: str = APP_URL) -
         ws = await _open(s, url)
         t0 = time.monotonic()
         st = {"turns": {}, "decisions": [], "deltas": {}, "texts": [], "utt_of": {}, "started": {}, "pcm": set(),
-              "ended": set(), "first": None}
+              "ended": set(), "first": None, "user": {}}
         done, sent = asyncio.Event(), asyncio.Event()
 
         async def reader():
@@ -75,6 +82,7 @@ async def converse(x: np.ndarray, timeout_s: float = 20.0, url: str = APP_URL) -
                 ev = json.loads(m.data)
                 k = ev.get("type")
                 if k == "error":
+                    st["texts"].append({"kind": "error", "text": json.dumps(ev, ensure_ascii=False)})
                     raise AppError(f"app error: {json.dumps(ev, ensure_ascii=False)[:300]}")
                 if k == "decision":
                     st["decisions"].append(ev.get("decision"))
@@ -93,11 +101,15 @@ async def converse(x: np.ndarray, timeout_s: float = 20.0, url: str = APP_URL) -
                     st["turns"][ev["turn"]] = ev
                 elif k == "word":
                     st["texts"].append({"kind": "user_word", "text": ev.get("text", "")})
+                    st["user"][ev.get("turn")] = st["user"].get(ev.get("turn"), "") + " " + ev.get("text", "")
                 elif k in ("interject", "backchannel"):
                     st["texts"].append({"kind": k, "text": ev.get("text", "")})
                 elif k in ("tool", "search"):
                     st["texts"].append({"kind": k, "text": json.dumps(
-                        {f: ev.get(f) for f in ("name", "args", "result", "query") if f in ev}, ensure_ascii=False)})
+                        {f: ev.get(f) for f in ("name", "args", "result", "query", "store") if f in ev}, ensure_ascii=False)})
+                elif k == "search_done":
+                    st["texts"] += [{"kind": "search_result", "text": f"{r.get('title', '')}. {r.get('snippet', '')}"}
+                                    for r in (ev.get("results") or [])[:SEARCH_SHOWN]]
             if not done.is_set():
                 raise AppError("app closed the connection mid-clip")
 
@@ -113,19 +125,33 @@ async def converse(x: np.ndarray, timeout_s: float = 20.0, url: str = APP_URL) -
                 t += CHUNK / SR
                 await asyncio.sleep(max(0.0, t - time.monotonic()))
 
+        def texts() -> list[dict]:
+            # the user's words joined per turn as well: clause-level checks need the whole line, not single words
+            return st["texts"] + [{"kind": "user_transcript", "text": " ".join(t.split())} for _, t in st["user"].items()] + \
+                [{"kind": "reply", "text": t} for _, t in sorted(st["deltas"].items())]
+
         rtask, mtask = asyncio.create_task(reader()), asyncio.create_task(mic())
         wait_done = asyncio.ensure_future(done.wait())
         try:
-            finished, _ = await asyncio.wait({rtask, wait_done}, timeout=clip_s + timeout_s,
+            finished, _ = await asyncio.wait({rtask, mtask, wait_done}, timeout=clip_s + timeout_s,
                                              return_when=asyncio.FIRST_COMPLETED)
-            if rtask in finished:
-                rtask.result()                           # re-raise AppError
+            for t in (rtask, mtask):
+                if t in finished and t.exception():
+                    raise t.exception()
+            if wait_done in finished:                    # late words, interjections and the final turn snapshot
+                finished, _ = await asyncio.wait({rtask, mtask}, timeout=DRAIN_S, return_when=asyncio.FIRST_EXCEPTION)
+                for t in finished:
+                    if t.exception():
+                        raise t.exception()
+        except AppError as e:
+            raise AppError(str(e), texts()) from e
+        except Exception as e:                           # transport failure: still keep what was already shown
+            raise AppError(f"client: {e!r}"[:300], texts()) from e
         finally:
             mtask.cancel(); rtask.cancel(); wait_done.cancel()
             await ws.close()
         f = st["first"]
-        for _, text in sorted(st["deltas"].items()):
-            st["texts"].append({"kind": "reply", "text": text})
+        st["texts"] = texts()
         return {"reply": st["deltas"].get(f, "") if f is not None else "",
                 "no_audio": f is not None and st["utt_of"].get(f) not in st["pcm"],
                 "early": f is not None and st["started"][f] < clip_s,

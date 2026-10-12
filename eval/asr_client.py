@@ -20,6 +20,14 @@ QUERY = "?encoding=pcm_s16le&sample_rate=16000&delay_ms=480&turn_detection=none&
 CHUNK = SR * 80 // 1000                      # 80 ms, the bridge's frame
 
 
+class ASRError(RuntimeError):
+    """The bridge failed mid-clip. `text` keeps what it had already transcribed (it was on screen: still audited)."""
+
+    def __init__(self, msg: str, text: str = ""):
+        super().__init__(msg)
+        self.text = text
+
+
 class Busy(RuntimeError):
     """The bridge's single session is taken (an open browser tab, or the previous run still closing)."""
 
@@ -80,6 +88,8 @@ async def transcribe(x: np.ndarray, speed: float = 1.0, tail_ms: int = 400, time
             await stream_pcm(ws, x, speed)
             await ws.send_str(json.dumps({"type": "input_audio.end"}))
             await asyncio.wait_for(rtask, timeout_s)
+        except Exception as e:
+            raise ASRError(f"asr: {e!r}"[:300], " ".join(out["text"].split())) from e
         finally:
             rtask.cancel()
             await ws.close()
