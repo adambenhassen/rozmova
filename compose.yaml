@@ -86,6 +86,7 @@ services:
       - --enable-prefix-caching
       - --generation-config=vllm
       - '--limit-mm-per-prompt={"image":0,"audio":0}'
+      - --dtype=${LLM_DTYPE:-auto}
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s

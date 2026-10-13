@@ -1,0 +1,24 @@
+# RTX 20-series (Turing, sm_75), e.g. RTX 2080 Ti 22 GB: overlay on compose.yaml.
+#
+#   .env:  ASR_CUDA_ARCHS=75   LLM_DTYPE=float16   LLM_GPU_MEMORY_UTILIZATION=0.58   (22 GB: weights 8.5 GiB + KV)
+#   docker compose -f compose.yaml -f compose.sm75.yaml build asr
+#   docker compose -f compose.yaml -f compose.sm75.yaml up -d
+#
+# Turing has no fast bf16 and 64 KB of shared memory per block:
+# - LLM: fp16 (LLM_DTYPE in .env), and vLLM 0.26's Triton attention with a 16-wide KV tile for Gemma 4's large
+#   heads (the default tile needs ~96 KB). FlashInfer needs sm80+; FlexAttention does not fit; SDPA is not
+#   available. The patched file only changes CUDA GPUs below sm80; services/llm-sm75/test_attention.py checks it
+#   against PyTorch. services/tts-sm75/test_tts.py checks the TTS.
+# - TTS: fp32 (bf16 runs at RTF 2.0; fp16 is fast but its sampler hits NaN probabilities; int8 weight-only asserts).
+services:
+  llm:
+    volumes:
+      - ${MODELS_DIR:-./models}:/models:ro
+      - ./services/llm-sm75/triton_unified_attention.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/ops/triton_unified_attention.py:ro
+  tts:
+    environment:
+      BREEZE_DTYPE: float32
+      BREEZE_INT8: ""
+    volumes:
+      - ${MODELS_DIR:-./models}:/models:ro
+      - ./services/tts-sm75/runtime.py:/opt/breeze/breeze_infer/runtime.py:ro

@@ -46,7 +46,7 @@ Latency on real recorded conversations: the reply reaches your ear about 0.7-0.8
 
 ## Prerequisites
 
-- RTX 4090 (or any other 24 GB NVIDIA card, it should work. If it doesn't - feel free to open an issue. I only have a 4090, so I couldn't test it on anything else.) The prebuilt images cover the RTX 3090 and 4090 generations. An RTX 5090 needs a build from source (see below).
+- RTX 4090 (or any other 24 GB NVIDIA card, it should work. If it doesn't - feel free to open an issue. I only have a 4090, so I couldn't test it on anything else.) The prebuilt images cover the RTX 3090 and 4090 generations. An RTX 5090 needs a build from source (see below). RTX 20-series cards with 22 GB (Turing, e.g. a modded 2080 Ti) work with the `compose.sm75.yaml` overlay; see the notes at its top. On a 2080 Ti the reply reaches you about 0.3 s later than on a 3090.
 - Linux with a recent NVIDIA driver
 - Docker with Compose v2 and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - About 75 GB of disk (models ~22 GB, container images ~50 GB)
