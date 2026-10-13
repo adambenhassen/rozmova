@@ -9,7 +9,9 @@
 #   heads (the default tile needs ~96 KB). FlashInfer needs sm80+; FlexAttention does not fit; SDPA is not
 #   available. The patched file only changes CUDA GPUs below sm80; services/llm-sm75/test_attention.py checks it
 #   against PyTorch. services/tts-sm75/test_tts.py checks the TTS.
-# - TTS: fp32 (bf16 runs at RTF 2.0; fp16 is fast but its sampler hits NaN probabilities; int8 weight-only asserts).
+# - TTS: fp16, with two fp32 islands: the attention mask is added in fp32 (in fp16 a fully masked, left-padded row
+#   becomes -inf, then NaN), and the T5Gemma2 text encoder plus its projections run in fp32 (its residual stream
+#   overflows fp16). RTF 0.63 vs 2.0 in bf16 and 0.91 in fp32; int8 weight-only asserts on sm_75.
 services:
   llm:
     volumes:
@@ -17,8 +19,10 @@ services:
       - ./services/llm-sm75/triton_unified_attention.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/ops/triton_unified_attention.py:ro
   tts:
     environment:
-      BREEZE_DTYPE: float32
+      BREEZE_DTYPE: float16
       BREEZE_INT8: ""
     volumes:
       - ${MODELS_DIR:-./models}:/models:ro
       - ./services/tts-sm75/runtime.py:/opt/breeze/breeze_infer/runtime.py:ro
+      - ./services/tts-sm75/breeze.py:/opt/breeze/models/breeze.py:ro
+      - ./services/tts-sm75/t5gemma2_compat.py:/opt/breeze/models/t5gemma2_compat.py:ro

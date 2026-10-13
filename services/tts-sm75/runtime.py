@@ -65,6 +65,42 @@ def update_generation_config_for_breeze(
     vars(model.generation_config).update(generation_config)
 
 
+def _keep_text_encoder_fp32(model, dtype) -> None:
+    """Rozmova, fp16 on Turing: the T5Gemma2 text encoder's residual stream exceeds fp16's range (inf, then NaN in the
+    sampler). Run it and its projections in fp32 and hand the projected states to the fp16 backbone."""
+    import torch
+
+    model.text_encoder.float()
+    for name in ("text_encoder_proj", "text_encoder_layer_projs"):
+        if getattr(model, name, None) is not None:
+            getattr(model, name).float()
+    project = model._project_segments
+    logged = []
+
+    fp16_max = torch.finfo(dtype).max
+
+    def _narrow(x):
+        """fp32 -> fp16 for the backbone; values beyond fp16's range are clamped (warned once) instead of becoming
+        inf, which would poison the CUDA context through the sampler's device-side assert."""
+        peak = float(x.abs().max())
+        if not torch.isfinite(x).all() or peak > fp16_max:
+            if "clamp" not in logged:
+                print(f"rozmova: WARNING text encoder output |x| max {peak} exceeds fp16; clamping", flush=True)
+                logged.append("clamp")
+            x = torch.nan_to_num(x, nan=0.0).clamp(-fp16_max, fp16_max)
+        return x.to(dtype)
+
+    def _project_segments(*args, **kwargs):
+        text_embeds, layer_states = project(*args, **kwargs)
+        if not logged:
+            peak = max([float(text_embeds.abs().max())] + [float(x.abs().max()) for x in layer_states or []])
+            print(f"rozmova: text encoder in fp32, projected |x| max {peak:.1f} (fp16 max 65504)", flush=True)
+            logged.append(peak)
+        return _narrow(text_embeds), [_narrow(x) for x in layer_states] if layer_states is not None else None
+
+    model._project_segments = _project_segments
+
+
 def load_runtime(
     ckpt_dir: Path,
     *,
@@ -92,10 +128,12 @@ def load_runtime(
         dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
     )
-    # Rozmova: BREEZE_DTYPE=float32 on Turing (no fast bf16 on sm_75; fp16 sampling hits NaN probabilities).
+    # Rozmova: BREEZE_DTYPE=float16 on Turing (no fast bf16 on sm_75), with the fp32 mask fix in models/breeze.py.
     # Cast the whole model, since the text encoder is built in bf16 explicitly (models/breeze.py). Unset = bf16.
     _dtype = os.environ.get("BREEZE_DTYPE")
     model.to(device=device, dtype=getattr(torch, _dtype)).eval() if _dtype else model.to(device).eval()
+    if _dtype == "float16" and getattr(model, "text_encoder", None) is not None:
+        _keep_text_encoder_fp32(model, torch.float16)
 
     from qwen_tts import Qwen3TTSTokenizer
 
